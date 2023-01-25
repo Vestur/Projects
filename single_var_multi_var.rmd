@@ -1,5 +1,5 @@
 ---
-title: "IE_Project"
+title: "NBA Project"
 author: "Edward Annatone"
 date: "`r Sys.Date()`"
 output: pdf_document
