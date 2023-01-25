@@ -1,0 +1,227 @@
+---
+title: "IE_Project"
+author: "Edward Annatone"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+# Import necessary libraries
+```{r}
+library(MASS)
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(olsrr)
+library(car)
+```
+
+# Setup Data, Get Histogram of Y-Variable
+```{r}
+nba_data = read.table(file="workspace/nba.csv", sep=",")
+
+# set column names to be variables names (originally stored in first row)
+names(nba_data) <- lapply(nba_data[1, ], as.character)
+
+# delete first row (which is just column names)
+nba_data <- nba_data[-1,] 
+
+# set salary values as characters (so they can be transformed to numeric)
+nba_data[, c(31)] = sapply(nba_data[, c(31)], as.character)
+
+# set numeric values to numeric, before they would be treated as categorical variables
+nba_data[, c(2,4:28, 31)] <- sapply(nba_data[, c(2,4:28, 31)], as.numeric)
+
+hist(nba_data$Salary1920)
+
+# remove player's names
+nba_data <- nba_data %>% select(-Name)
+
+
+# get log transformed y data, to see what happens when Y is not log-transformed comment out this line
+nba_data$Salary1920 <- log(nba_data$Salary1920)
+nba_data$TwoPA <- log(nba_data$TwoPA)
+nba_data$PTS <- log(nba_data$PTS)
+```
+
+# Function Which Enables Quick Single Variable Analysis
+```{r}
+# main one-variable linear regression analysis function -> good for consistency
+linear_regression_analysis <- function(data, response, predictor_x, transformation=NULL) {
+  cat("\nSTARTING ANALYSIS FOR PREDICTOR", predictor_x, "\n")
+  
+  # transform predictor if requested
+  if (!is.null(transformation)) {
+    data[,predictor_x] = transformation
+  }
+
+    # get linear model
+  formula <- as.formula(paste(response, "~", predictor_x))
+  model = lm(formula, data=data)
+  
+  # summarize linear model findings
+  summary <- summary(model)
+  print(summary)
+  print("\n")
+  
+  plot(data[, predictor_x], data[, response], main=paste("Linear model of", response, " versus ", predictor_x), ylab = paste(response), xlab=paste(predictor_x))
+  abline(model)
+
+  # plot relevant graphs in one plot
+  par(mfrow=c(2,2))
+  plot(model)
+  par(mfrow=c(1, 1))
+  
+  
+  # plot predictor variable in several plots to analyze and look for any patterns
+  stem(data[, predictor_x])
+  hist(data[, predictor_x], main=predictor_x, xlab=predictor_x)
+  
+  # residual analysis
+  residuals = model$residuals
+  plot(model$fitted.values, residuals, main=paste("Residuals vs Y_hat under", predictor_x), xlab="Y_hat")
+  abline(h=0)
+  plot(data[, predictor_x], residuals, main= paste("Residuals vs ", predictor_x) , xlab="X_1")
+  abline(h=0)
+  qqnorm(residuals, main = paste("Normality of Residuals under ", predictor_x))
+  qqline(residuals)
+
+  # this is included in every run but only look at after the above graphs are consistent the with predictor
+  # being linear (i.e. residual analysis performed and multiple transformations of predictors found).
+  # run a t-test on single variable beta_1
+  n <- length(data[, predictor_x])
+  alpha = 0.05
+  beta_1 = model$coef[2]
+  slope_se = summary$coef[[4]]
+  t_obs = beta_1/slope_se
+  t_test = qt(1-alpha/2, n-2, lower.tail=TRUE)
+  p_value <- 2*pt(t_obs, n-2, lower.tail=FALSE)
+  cat("Observed t-stat: ", t_obs, "\n")
+  cat("Significance level t-stat: ", t_test, "\n")
+  cat("P-Value for t-test: ", round(p_value), "\n")
+  # reject null in favor of alternative
+  print(cat("t_obs", t_obs, "\n"))
+  print(cat("t_stat: ", t_test, "\n"))
+  # decision rule
+  if (abs(t_obs) >  t_test) {
+    cat("T-Test Indicates A relationship between", predictor_x, " and ", response, "\n")
+  }
+  else {
+    cat("T-Test Indicates NO relationship between", predictor_x, " and ", response, "\n")
+  }
+  
+  # Since t-test is less reliable at time, we should also do the F-Test
+  # F-Test
+  # Find MSE, MSR
+  sse <- sum((fitted(model) - data[, response])^2)
+  mean_response = mean(data[, response])
+  ssr <- sum((fitted(model) - mean_response)^2)
+  MSE <- sse/(n - 2)
+  MSR <- ssr
+  SSTO <- ssr + sse
+  cat("MSR is ", MSR, " with ", 1, "degree of freedom", "\n")
+  cat("MSE is ", MSE, " with ", n-2, "degrees of freedom", "\n")
+  cat("SSTO is ", SSTO, " with ", n-1, "degrees of freedom", "\n")
+  # H_0: MSR/MSE = 1
+  # H_A: MSR/MSE > 1
+  f_obs = MSR/MSE
+  f_stat = qf(1-alpha, 1, n-2)
+  p_value = pf(f_stat, 1, n-2, lower.tail = FALSE)
+  cat("F_obs", f_obs, "with ", n-2, "degrees of freedom \n")
+  cat("F_stat: ", f_stat, "\n")
+  # decision rule
+  if (f_obs > f_stat) {
+    cat("F-Test Indicates A relationship between", predictor_x, " and ", response, "\n")
+  }
+  else {
+    cat("F-Test Indicates NO relationship between", predictor_x, " and ", response, "\n")
+  }
+  
+  #CI for beta_1
+  conf_interval = confint(object=model, level=1-alpha)[2,]
+  cat("Alpha-Level Confidence Interval for slope (beta_1): ", conf_interval, "\n")
+  
+  # do PI for mean, median values of predictor variables
+  mean_x = mean(data[, predictor_x])
+  median_x = median(data[, predictor_x])
+  prediction_interval_mean = predict(object=model, data.frame(assign(predictor_x, mean_x)), se.fit=TRUE, interval="predict", level = 1-alpha)
+  cat("Prediction interval for mean of ", predictor_x, "is ", prediction_interval_mean$fit[2:3], "\n")
+  prediction_interval_median = predict(object=model, data.frame(assign(predictor_x, median_x)), se.fit=TRUE, interval="predict", level = 1-alpha)
+  cat("Prediction interval for median of ", predictor_x, "is ", prediction_interval_median$fit[2:3], "\n")
+  
+  # Run t-test on pearson product-moment correlation coefficient
+  # (I.E the sqrt(R-squared))
+  print(cor.test(data[, predictor_x],data[, response], method="pearson"))
+  cat("ENDING ANALYSIS FOR PREDICTOR", predictor_x, "\n")
+}
+```
+
+# Example of running single variable analysis
+```{r}
+linear_regression_analysis(nba_data, "Salary1920", "PTS")
+```
+
+# Multivariate Analysis
+
+## Transforming team variable (i.e. deleting team variable and adding wealth variable)
+
+```{r}
+rich <- c("CLE", "GSW", "LAC", "OKC", "POR") # >120k
+nor <- c("BOS",'MIN', 'ORL', 'SAS', 'HOU', 'MIL', 'UTA', 'DEN', 'TOR', 'LAL', 'BRK', 'CHO', 'MIA', 'DET', 'PHI', 'PHO', 'NOP', 'IND', 'WAS') # > 80k
+poor <- c("ATL", "NYK", "SAC", "CHI", "MEM", "DAL") #<80k
+nba_data$wealthTeam <- with(nba_data, ifelse(Tm1920 %in% rich, 'rich', ifelse(Tm1920 %in% nor, 'nor', 'poor')))
+nba_data <- nba_data %>% select(-Tm1920)
+nba_data <- nba_data %>% select(-Tm1819)
+```
+
+## Run Model (Tried forward and backwards, here is backwards)
+```{r}
+model <- lm(formula=Salary1920 ~ ., data = nba_data)
+backwards_stepwise <- ols_step_backward_p(model, pent = 0.05, prem = 0.1)
+backwards_stepwise_model = backwards_stepwise$model
+backwards_stepwise_model
+plot(backwards_stepwise)
+```
+
+## Cook's Distance
+```{r}
+plot(model)
+```
+
+## Without doing log transformation
+```{r}
+
+model <- lm(Salary1920 ~ ., data = nba_model)
+ols_step_both_p(model, pent = 0.05, prem = 0.1)
+
+```
+
+## Final model without taking log transformation
+```{r}
+mod <- lm(Salary1920 ~ PTS + Age + STL + team_cate  + AST + TRB + PF, data = nba_model)
+summary(mod)
+```
+
+## Model validation for this model
+
+```{r}
+## Split dataset into 75% for training and 25% for testing
+set.seed(1)
+idx <- sample(1:nrow(nba_model), nrow(nba_model)*0.75)
+train <- nba_model[idx,]
+valid <- nba_model[-idx,]
+train_mod <- lm(Salary1920 ~ PTS + Age + STL + team_cate  + AST + TRB + PF, data = train)
+summary(train_mod)
+valid_pred <- predict(train_mod, valid) ## Making predictions for validation set
+sum((valid_pred-valid['Salary1920'])^2)/nrow(valid)  ## MSPR
+```
+
+
+
+
+
+
+
+
+
+
+
